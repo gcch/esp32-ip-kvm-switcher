@@ -1,0 +1,8 @@
+{
+  "hostname": "kvm-switch1",
+  "mdns_domain": "local",
+  "wifi_ssid": "wifi-ssid",
+  "wifi_password": "wifi-password",
+  "auth_user": "auth-user",
+  "auth_password": "auth-password"
+}
