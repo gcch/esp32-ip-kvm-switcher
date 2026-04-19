@@ -118,3 +118,64 @@ BASIC 認証が求められるので、config.json で設定した `auth_user` �
 ![web-manager](/readme-img/web-manager.png)
 
 入力の切り替えなど各種機能が正常に動けばOK。
+
+## (Option) JetKVM 等の Web管理画面との統合
+
+JetKVM など、Web ブラウザ管理の KVM と組み合わせて使用する場合、KVM スイッチボタンが統合されている方が使いやすいと思われるので、NGINX のリバースプロキシ機能を使って、KVM スイッチ切り替え機能 (ウィンドウ最下部) を注入する。
+
+![jetkvm+kvm-sw](/readme-img/jetkvm+kvm-sw.png)
+
+### NGINX のセットアップ
+
+NGINX をインストールし、デフォルトページを消す。
+
+```
+apt install nginx
+rm /etc/nginx/sites-enabled/default
+```
+
+### サーバ証明書の配置
+
+`/etc/nginx/ssl` ディレクトリを作成し、サーバ証明書 (秘密鍵 `server.key` と公開鍵 `server.pem`) を配置する。
+
+```
+mkdir /etc/nginx/ssl
+
+# オレオレ証明書を発行する場合
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout server.key -out server.crt
+```
+
+### 注入する JavaScript の配置
+
+[kvm-inject.js](/nginx/static/kvm-inject.js) を `/etc/nginx/static/kvm-inject.js` に配置する。
+
+### NGINX のプロキシ設定
+
+[kvm-proxy](/nginx/sites-available/kvm-proxy) を `/etc/nginx/sites-available/kvm-proxy` に配置する。
+
+配置後、環境に合わせて設定を行う。
+
+```
+    location /esp32/ {
+        proxy_pass http://kvm-switch1.local/;  # ESP32 にアクセスするための IP アドレス or FQDN を設定
+        :
+        proxy_set_header Host kvm-switch1.local;  # ESP32 にアクセスするための IP アドレス or FQDN を設定
+        proxy_set_header Authorization "Basic dXNlcjpwYXNz==";  # ESP32 認証情報をコロンで連結し、 "${auth_user}:${auth_password}" base64 コマンドでエンコードした文字列を指定
+        :
+    }
+
+    location / {
+        proxy_pass https://kvm1.local;  # JetKVM にアクセスするための IP アドレス or FQDN を設定
+        :
+```
+
+プロキシ設定を有効化する。
+
+```
+ln -s /etc/nginx/sites-available/kvm-proxy /etc/nginx/sites-enabled/kvm-proxy
+systemctl restart nginx
+```
+
+### 動作確認
+
+KVM プロキシに HTTPS アクセスを行い、想定通り KVM スイッチボタンがページ下部に表示され、動作することを確認する。

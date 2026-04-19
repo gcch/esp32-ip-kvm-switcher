@@ -1,0 +1,214 @@
+(function () {
+  // -----------------------------------------
+  // Theme definitions
+  // -----------------------------------------
+  const THEMES = {
+    light: {
+      bar:         "display:flex;gap:6px;align-items:center;padding:4px 0;background:rgba(255,255,255,0.8);border-top:1px solid #BCBFC4;",
+      title:       "padding:4px 10px;color:#2d2d2d;font-size:12px;",
+      btnBase:     "padding:4px 10px;border-radius:4px;border:1px solid #BCBFC4;background:#fff;color:#2d2d2d;font-size:12px;cursor:pointer;transition:background 0.15s,color 0.15s,border-color 0.15s;",
+      btnHover:    "#F3F7FE",
+      btnActive:   { bg: "#1a56db", color: "#fff",   border: "#1a56db" },
+      btnInactive: { bg: "#fff",    color: "#2d2d2d", border: "#BCBFC4" },
+      btnPress:    "#EBF2FD",
+      btnError:    { bg: "#fee2e2", border: "#f87171" },
+    },
+    dark: {
+      bar:         "display:flex;gap:6px;align-items:center;padding:4px 0;background:rgba(15,23,42,0.85);border-top:1px solid #334155;",
+      title:       "padding:4px 10px;color:#94a3b8;font-size:12px;",
+      btnBase:     "padding:4px 10px;border-radius:4px;border:1px solid #334155;background:#1e293b;color:#cbd5e1;font-size:12px;cursor:pointer;transition:background 0.15s,color 0.15s,border-color 0.15s;",
+      btnHover:    "#273549",
+      btnActive:   { bg: "#1d4ed8", color: "#fff",   border: "#3b82f6" },
+      btnInactive: { bg: "#1e293b", color: "#cbd5e1", border: "#334155" },
+      btnPress:    "#1e3a5f",
+      btnError:    { bg: "#450a0a", border: "#dc2626" },
+    },
+  };
+
+  let activeChannel = null;
+  let currentTheme  = "light";
+  const inputButtons = {};
+  const allButtons   = [];  // All buttons (INPUT + EDID)
+
+  // -----------------------------------------
+  // Dark mode detection
+  // -----------------------------------------
+  function isDark() {
+    return document.documentElement.classList.contains("dark");
+  }
+
+  function getTheme() {
+    return isDark() ? THEMES.dark : THEMES.light;
+  }
+
+  // -----------------------------------------
+  // Apply theme to the entire bar
+  // -----------------------------------------
+  function applyTheme() {
+    const t   = getTheme();
+    const bar = document.getElementById("kvm-switch-bar");
+    if (!bar) return;
+
+    bar.style.cssText = t.bar;
+
+    const titleEl = document.getElementById("kvm-switch-title");
+    if (titleEl) titleEl.style.cssText = t.title;
+
+    allButtons.forEach(btn => {
+      btn.style.cssText = t.btnBase;
+    });
+
+    // Re-apply active state after theme change
+    setActiveChannel(activeChannel, true);
+  }
+
+  // -----------------------------------------
+  // Highlight the active channel button
+  // -----------------------------------------
+  function setActiveChannel(ch, themeChangeOnly = false) {
+    if (!themeChangeOnly) activeChannel = ch;
+    const t = getTheme();
+
+    for (let i = 1; i <= 4; i++) {
+      const btn = inputButtons[i];
+      if (!btn) continue;
+      const isActive = i === (themeChangeOnly ? activeChannel : ch);
+      const s = isActive ? t.btnActive : t.btnInactive;
+      btn.style.background   = s.bg;
+      btn.style.color        = s.color;
+      btn.style.borderColor  = s.border;
+      btn.dataset.active = isActive ? "1" : "";
+      btn.onmouseleave = isActive ? () => {} : () => { btn.style.background = t.btnInactive.bg; };
+    }
+  }
+
+  // -----------------------------------------
+  // Button factory helper
+  // -----------------------------------------
+  function makeButton(label, onClick) {
+    const t   = getTheme();
+    const btn = document.createElement("button");
+    btn.textContent  = label;
+    btn.style.cssText = t.btnBase;
+    btn.onmouseenter = () => {
+      if (!btn.dataset.active)
+        btn.style.background = getTheme().btnHover;
+    };
+    btn.onmouseleave = () => {
+      if (!btn.dataset.active)
+        btn.style.background = getTheme().btnInactive.bg;
+    };
+    btn.onclick = onClick;
+    allButtons.push(btn);
+    return btn;
+  }
+
+  // -----------------------------------------
+  // Build and inject the toolbar bar
+  // -----------------------------------------
+  function injectButtons() {
+    if (document.getElementById("kvm-switch-bar")) return;
+    const toolbar = document.querySelector('[class*="ActionBar"], [class*="Toolbar"], header, [class*="header"]');
+    if (!toolbar) return;
+
+    const t   = getTheme();
+    const bar = document.createElement("div");
+    bar.id = "kvm-switch-bar";
+    bar.style.cssText = t.bar;
+
+    // Title label
+    const title = document.createElement("div");
+    title.id          = "kvm-switch-title";
+    title.textContent = "KVM Switcher";
+    title.style.cssText = t.title;
+    bar.appendChild(title);
+
+    // INPUT 1-4 channel buttons
+    [1, 2, 3, 4].forEach(ch => {
+      const btn = makeButton(`INPUT ${ch}`, async () => {
+        try {
+          const res = await fetch("/esp32/api/input", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel: ch }),
+          });
+          if (!res.ok) throw new Error();
+          setActiveChannel(ch);
+        } catch {
+          const tt = getTheme();
+          btn.style.background  = tt.btnError.bg;
+          btn.style.borderColor = tt.btnError.border;
+          setTimeout(() => {
+            const s = activeChannel === ch ? tt.btnActive : tt.btnInactive;
+            btn.style.background  = s.bg;
+            btn.style.borderColor = s.border;
+          }, 1500);
+        }
+      });
+      inputButtons[ch] = btn;
+      bar.appendChild(btn);
+    });
+
+    // Spacer
+    const space = document.createElement("div");
+    space.style.padding = "16px";
+    bar.appendChild(space);
+
+    // EDID / Reset buttons
+    [
+      { label: "EDID ON/OFF",  path: "/api/edid/toggle",  resetToInput1: false },
+      { label: "EDID Refresh", path: "/api/edid/refresh", resetToInput1: true  },
+      { label: "Reset",        path: "/api/edid/factory", resetToInput1: true  },
+    ].forEach(fn => {
+      const btn = makeButton(fn.label, async () => {
+        const tt = getTheme();
+        btn.style.background = tt.btnPress;
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/esp32${fn.path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          if (!res.ok) throw new Error();
+          if (fn.resetToInput1) setActiveChannel(1);
+        } catch {
+          const ttt = getTheme();
+          btn.style.background  = ttt.btnError.bg;
+          btn.style.borderColor = ttt.btnError.border;
+          setTimeout(() => {
+            btn.style.background  = ttt.btnInactive.bg;
+            btn.style.borderColor = ttt.btnInactive.border;
+          }, 1500);
+        } finally {
+          setTimeout(() => {
+            btn.style.background = getTheme().btnInactive.bg;
+            btn.disabled = false;
+          }, 500);
+        }
+      });
+      bar.appendChild(btn);
+    });
+
+    toolbar.appendChild(bar);
+
+    // Fetch current channel and highlight on load
+    fetch("/esp32/api/input")
+      .then(r => r.json())
+      .then(d => { if (d.channel) setActiveChannel(d.channel); })
+      .catch(() => {});
+  }
+
+  // -----------------------------------------
+  // Watch <html class="dark"> changes for auto theme switching
+  // -----------------------------------------
+  const themeObserver = new MutationObserver(() => applyTheme());
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+
+  // Wait for React DOM to render
+  const domObserver = new MutationObserver(() => injectButtons());
+  domObserver.observe(document.body, { childList: true, subtree: true });
+  injectButtons();
+})();
