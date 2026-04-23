@@ -4,29 +4,32 @@
   // -----------------------------------------
   const THEMES = {
     light: {
-      bar:         "display:flex;gap:6px;align-items:center;padding:4px 0;background:rgba(255,255,255,0.8);border-top:1px solid #BCBFC4;",
-      title:       "padding:4px 10px;color:#2d2d2d;font-size:12px;",
-      btnBase:     "padding:4px 10px;border-radius:4px;border:1px solid #BCBFC4;background:#fff;color:#2d2d2d;font-size:12px;cursor:pointer;transition:background 0.15s,color 0.15s,border-color 0.15s;",
+      bar:         "display:flex;flex-wrap:wrap;gap:0.5rem 0;align-items:center;padding:0.4rem 1rem;background:rgba(255,255,255,0.8);border-top:1px solid #BCBFC4;min-width:0;width:100%;box-sizing:border-box;",
+      group:       "display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0.5rem;padding:0 1rem;min-width:0;flex-shrink:1;",
+      title:       "padding:0.25rem 0.5rem; color:#000; font-size:12px; font-family:Circular,sans-serif; font-weight:600;",
+      divider:     "width:0px;height:1.25rem;background:#BCBFC4;margin:0;flex-shrink:0;",
+      btnBase:     "padding:0.25rem 0.5rem; border-radius:4px; border:1px solid #BCBFC4; background:#fff; color:#000; font-size:12px;font-weight:500;cursor:pointer;transition:background 0.15s,color 0.15s,border-color 0.15s;white-space:nowrap;flex-shrink:0;",
       btnHover:    "#F3F7FE",
       btnActive:   { bg: "#1a56db", color: "#fff",   border: "#1a56db" },
-      btnInactive: { bg: "#fff",    color: "#2d2d2d", border: "#BCBFC4" },
+      btnInactive: { bg: "#fff",    color: "#000",    border: "#BCBFC4" },
       btnPress:    "#EBF2FD",
       btnError:    { bg: "#fee2e2", border: "#f87171" },
     },
     dark: {
-      bar:         "display:flex;gap:6px;align-items:center;padding:4px 0;background:rgba(15,23,42,0.85);border-top:1px solid #334155;",
-      title:       "padding:4px 10px;color:#94a3b8;font-size:12px;",
-      btnBase:     "padding:4px 10px;border-radius:4px;border:1px solid #334155;background:#1e293b;color:#cbd5e1;font-size:12px;cursor:pointer;transition:background 0.15s,color 0.15s,border-color 0.15s;",
+      bar:         "display:flex;flex-wrap:wrap;gap:0.5rem 0;align-items:center;padding:0.4rem 1rem;background:rgba(15,23,42,0.85);border-top:1px solid #334155;min-width:0;width:100%;box-sizing:border-box;",
+      group:       "display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0.5rem;padding:0 1rem;min-width:0;flex-shrink:1;",
+      title:       "padding:0.25rem 0.5rem; color:#fff; font-size:12px; font-family:Circular,sans-serif; font-weight:600;",
+      divider:     "width:0px;height:1.25rem;background:#334155;margin:0;flex-shrink:0;",
+      btnBase:     "padding:0.25rem 0.5rem; border-radius:4px; border:1px solid #334155; background:#1e293b; color:#fff; font-size:12px;font-weight:500;cursor:pointer;transition:background 0.15s,color 0.15s,border-color 0.15s;white-space:nowrap;flex-shrink:0;",
       btnHover:    "#273549",
       btnActive:   { bg: "#1d4ed8", color: "#fff",   border: "#3b82f6" },
-      btnInactive: { bg: "#1e293b", color: "#cbd5e1", border: "#334155" },
+      btnInactive: { bg: "#1e293b", color: "#fff",    border: "#334155" },
       btnPress:    "#1e3a5f",
       btnError:    { bg: "#450a0a", border: "#dc2626" },
     },
   };
 
   let activeChannel = null;
-  let currentTheme  = "light";
   const inputButtons = {};
   const allButtons   = [];  // All buttons (INPUT + EDID)
 
@@ -54,6 +57,14 @@
     const titleEl = document.getElementById("kvm-switch-title");
     if (titleEl) titleEl.style.cssText = t.title;
 
+    document.querySelectorAll(".kvm-group").forEach(g => {
+      g.style.cssText = t.group;
+    });
+
+    document.querySelectorAll(".kvm-divider").forEach(d => {
+      d.style.cssText = t.divider;
+    });
+
     allButtons.forEach(btn => {
       btn.style.cssText = t.btnBase;
     });
@@ -74,11 +85,11 @@
       if (!btn) continue;
       const isActive = i === (themeChangeOnly ? activeChannel : ch);
       const s = isActive ? t.btnActive : t.btnInactive;
-      btn.style.background   = s.bg;
-      btn.style.color        = s.color;
-      btn.style.borderColor  = s.border;
-      btn.dataset.active = isActive ? "1" : "";
-      btn.onmouseleave = isActive ? () => {} : () => { btn.style.background = t.btnInactive.bg; };
+      btn.style.background  = s.bg;
+      btn.style.color       = s.color;
+      btn.style.borderColor = s.border;
+      btn.dataset.active    = isActive ? "1" : "";
+      btn.onmouseleave      = isActive ? () => {} : () => { btn.style.background = getTheme().btnInactive.bg; };
     }
   }
 
@@ -88,19 +99,39 @@
   function makeButton(label, onClick) {
     const t   = getTheme();
     const btn = document.createElement("button");
-    btn.textContent  = label;
+    btn.textContent   = label;
     btn.style.cssText = t.btnBase;
-    btn.onmouseenter = () => {
-      if (!btn.dataset.active)
-        btn.style.background = getTheme().btnHover;
+    btn.onmouseenter  = () => {
+      if (!btn.dataset.active) btn.style.background = getTheme().btnHover;
     };
-    btn.onmouseleave = () => {
-      if (!btn.dataset.active)
-        btn.style.background = getTheme().btnInactive.bg;
+    btn.onmouseleave  = () => {
+      if (!btn.dataset.active) btn.style.background = getTheme().btnInactive.bg;
     };
     btn.onclick = onClick;
     allButtons.push(btn);
     return btn;
+  }
+
+  // -----------------------------------------
+  // Build a flex group wrapper
+  // -----------------------------------------
+  function makeGroup() {
+    const t = getTheme();
+    const g = document.createElement("div");
+    g.className    = "kvm-group";
+    g.style.cssText = t.group;
+    return g;
+  }
+
+  // -----------------------------------------
+  // Build a vertical divider
+  // -----------------------------------------
+  function makeDivider() {
+    const t = getTheme();
+    const d = document.createElement("div");
+    d.className    = "kvm-divider";
+    d.style.cssText = t.divider;
+    return d;
   }
 
   // -----------------------------------------
@@ -113,17 +144,20 @@
 
     const t   = getTheme();
     const bar = document.createElement("div");
-    bar.id = "kvm-switch-bar";
+    bar.id            = "kvm-switch-bar";
     bar.style.cssText = t.bar;
 
     // Title label
-    const title = document.createElement("div");
-    title.id          = "kvm-switch-title";
-    title.textContent = "KVM Switcher";
-    title.style.cssText = t.title;
-    bar.appendChild(title);
+    //const title = document.createElement("div");
+    //title.id            = "kvm-switch-title";
+    //title.textContent   = "KVM Switcher";
+    //title.style.cssText = t.title;
+    //bar.appendChild(title);
 
-    // INPUT 1-4 channel buttons
+    bar.appendChild(makeDivider());
+
+    // INPUT 1-4 channel buttons (group)
+    const inputGroup = makeGroup();
     [1, 2, 3, 4].forEach(ch => {
       const btn = makeButton(`INPUT ${ch}`, async () => {
         try {
@@ -146,15 +180,14 @@
         }
       });
       inputButtons[ch] = btn;
-      bar.appendChild(btn);
+      inputGroup.appendChild(btn);
     });
+    bar.appendChild(inputGroup);
 
-    // Spacer
-    const space = document.createElement("div");
-    space.style.padding = "16px";
-    bar.appendChild(space);
+    bar.appendChild(makeDivider());
 
-    // EDID / Reset buttons
+    // EDID / Reset buttons (group)
+    const edidGroup = makeGroup();
     [
       { label: "EDID ON/OFF",  path: "/api/edid/toggle",  resetToInput1: false },
       { label: "EDID Refresh", path: "/api/edid/refresh", resetToInput1: true  },
@@ -186,8 +219,9 @@
           }, 500);
         }
       });
-      bar.appendChild(btn);
+      edidGroup.appendChild(btn);
     });
+    bar.appendChild(edidGroup);
 
     toolbar.appendChild(bar);
 
