@@ -103,7 +103,7 @@ MDNS_DOMAIN: <mdns_domain>
 WIFI_SSID: <wifi_ssid>
 Wi-Fi (<wifi_ssid>) 接続中....
 アクセスページ: http://xxx.xxx.xxx.xxx/
-mDNS起動: http://<hostname>.<MDNS_DOMAIN>/
+mDNS起動: http://<hostname>.<mdns_domain>/
 Webサーバー起動
 ```
 
