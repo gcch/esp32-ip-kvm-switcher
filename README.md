@@ -71,9 +71,9 @@ ESP32 でリレーのコントロール、リレー (スイッチ) の COM は�
 
 ### 設定ファイルの作成と ESP32 への転送
 
-[data.sample](data.sample) フォルダを `data` にリネーム。
+[data.sample](/esp32-ip-kvm-switcher/data.sample) フォルダを `data` にリネーム。
 
-さらに、フォルダ内の [config.json](data.sample/config.json) の内容を自身の環境に合わせて編集。
+さらに、フォルダ内の [config.json](/esp32-ip-kvm-switcher/data.sample/config.json) の内容を自身の環境に合わせて編集。
 
 | 設定項目            | 設定内容                             | 設定値の例                  |
 | --------------- | -------------------------------- | :--------------------- |
@@ -88,7 +88,7 @@ ESP32 でリレーのコントロール、リレー (スイッチ) の COM は�
 
 ### ESP32 へのコード書き込み
 
-[esp32-ip-kvm-switcher.ino](esp32-ip-kvm-switcher.ino) を Arduino IDE で開いて、ESP32 に書き込む (アップロードする)。
+[esp32-ip-kvm-switcher.ino](/esp32-ip-kvm-switcher/esp32-ip-kvm-switcher.ino) を Arduino IDE で開いて、ESP32 に書き込む (アップロードする)。
 
 ### 起動確認
 
