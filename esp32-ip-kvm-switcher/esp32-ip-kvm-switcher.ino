@@ -11,6 +11,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include "esp_wifi.h"   // ★ 追加: esp_wifi_set_ps() のため
 
 // =====================
 // 定数
@@ -76,7 +77,6 @@ void loadConfig() {
   strcpy(AUTH_PASSWORD, doc["auth_password"].as<const char*>());
 
   Serial.println("コンフィグが読み込まれました");
-
   Serial.printf("HOSTNAME: %s\n", HOSTNAME);
   Serial.printf("MDNS_DOMAIN: %s\n", MDNS_DOMAIN);
   Serial.printf("WIFI_SSID: %s\n", WIFI_SSID);
@@ -100,11 +100,18 @@ bool checkAuth() {
 }
 
 // =====================
-// 低レベルリレー操作
+// 低レベルリレー操作 (非ブロッキング版)
+// ★ delay() の代わりに millis() ループで待機し、
+//   その間も server.handleClient() を呼び続けることで
+//   EDID操作中のネットワーク断を防ぐ
 // =====================
 void holdRelay(int pin, int ms) {
   digitalWrite(pin, HIGH);
-  delay(ms);
+  unsigned long start = millis();
+  while (millis() - start < (unsigned long)ms) {
+    server.handleClient();  // ★ ネットワーク処理を継続
+    delay(10);
+  }
   digitalWrite(pin, LOW);
 }
 
@@ -141,6 +148,50 @@ void edidRefresh() {
   Serial.println("EDID リセット開始 (PC2 3秒)");
   holdRelay(RELAY_PINS[1], EDID_REFRESH_MS);
   Serial.println("EDID リセット完了");
+}
+
+// =====================
+// Wi-Fi 接続 + 省電力モード無効化
+// ★ setup() と自動再接続の両方から呼ぶ共通関数
+// =====================
+bool connectWiFi() {
+  WiFi.disconnect(true);
+  delay(100);
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(HOSTNAME);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.printf("Wi-Fi (%s) 接続中", WIFI_SSID);
+
+  int retry = 0;
+  while (WiFi.status() != WL_CONNECTED && retry < 20) {
+    Serial.print('.');
+    delay(1000);
+    retry++;
+  }
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Wi-Fi 接続失敗");
+    return false;
+  }
+
+  // ★ 省電力モード無効化 (Modem Sleep によるPing不達防止)
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
+  Serial.printf("アクセスページ: http://%s/\n", WiFi.localIP().toString().c_str());
+  return true;
+}
+
+// =====================
+// mDNS 起動 (再接続後の再起動にも対応)
+// =====================
+void startMDNS() {
+  MDNS.end();
+  if (MDNS.begin(HOSTNAME)) {
+    Serial.printf("mDNS起動: http://%s.%s/\n", HOSTNAME, MDNS_DOMAIN);
+  } else {
+    Serial.println("mDNS起動失敗");
+  }
 }
 
 // =====================
@@ -478,7 +529,6 @@ async function triggerEdid(op) {
     const res = await fetch('/api/edid/' + op, { method: 'POST' });
     const data = await res.json();
     showToast(data.message || '完了');
-    // EDID refresh / factory reset は本体がINPUT 1に戻るのでUIも更新
     if (op === 'refresh' || op === 'factory') {
       updateUI(1);
     }
@@ -571,30 +621,17 @@ void setup() {
   // 設定ファイル読み込み
   loadConfig();
 
-  // リレーピン初期化 (HIGH=ON, アクティブHIGH)
+  // リレーピン初期化
   for (int i = 0; i < NUM_CHANNELS; i++) {
     pinMode(RELAY_PINS[i], OUTPUT);
     digitalWrite(RELAY_PINS[i], LOW);
   }
 
-  // Wi-Fi接続
-  WiFi.mode(WIFI_STA);
-  WiFi.setHostname(HOSTNAME);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.printf("Wi-Fi (%s) 接続中", WIFI_SSID);
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print('.');
-    delay(1000);
-  }
-  Serial.println();
-  Serial.printf("アクセスページ: http://%s/\n", WiFi.localIP().toString().c_str());
+  // Wi-Fi接続 (省電力モード無効化を含む)
+  connectWiFi();
 
   // mDNS起動
-  if (MDNS.begin(HOSTNAME)) {
-    Serial.printf("mDNS起動: http://%s.%s/\n", HOSTNAME, MDNS_DOMAIN);
-  } else {
-    Serial.println("mDNS起動失敗");
-  }
+  startMDNS();
 
   // ルーティング
   server.on("/",                  HTTP_GET,  handleRoot);
@@ -611,7 +648,20 @@ void setup() {
 
 // =====================
 // メインループ
+// ★ Wi-Fi 切断監視・自動再接続を追加
 // =====================
 void loop() {
+  // Wi-Fi 切断検知 → 自動再接続
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Wi-Fi切断を検知 → 再接続中...");
+    if (connectWiFi()) {
+      startMDNS();  // mDNS も再起動
+      Serial.println("再接続成功");
+    } else {
+      Serial.println("再接続失敗 → 5秒後にリトライ");
+      delay(5000);
+    }
+  }
+
   server.handleClient();
 }
