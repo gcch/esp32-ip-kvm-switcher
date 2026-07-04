@@ -46,6 +46,13 @@ const int EDID_REFRESH_MS   = 3300;  // PC2長押し: EDIDリセット（再読�
 WebServer server(80);
 int currentChannel = 1;
 
+// ★ Wi-Fi 監視用
+volatile bool wifiDisconnectedEvent = false;   // onWiFiEvent から即時セットされるフラグ
+unsigned long lastWifiCheckMs = 0;             // 前回の生存確認時刻
+const unsigned long WIFI_CHECK_INTERVAL_MS = 10000; // 10秒毎に強制的にも生存確認
+unsigned long lastReconnectAttemptMs = 0;      // 前回の再接続試行時刻
+const unsigned long WIFI_RETRY_INTERVAL_MS = 5000;  // 再接続失敗時のリトライ間隔（非ブロッキング）
+
 // =====================
 // 設定ファイル読み込み
 // AUTH_USER が空文字列の場合は認証スキップ
@@ -151,6 +158,27 @@ void edidRefresh() {
 }
 
 // =====================
+// Wi-Fi イベントハンドラ
+// ★ ルーターの瞬断/再起動時、WiFi.status() の更新が遅れる、
+//   もしくはされないケースがあるため、切断イベントを直接検知して
+//   即座に再接続フラグを立てる
+// =====================
+void onWiFiEvent(WiFiEvent_t event) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      Serial.println("[WiFiEvent] 切断イベントを検知");
+      wifiDisconnectedEvent = true;
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      Serial.println("[WiFiEvent] IP取得完了");
+      wifiDisconnectedEvent = false;
+      break;
+    default:
+      break;
+  }
+}
+
+// =====================
 // Wi-Fi 接続 + 省電力モード無効化
 // ★ setup() と自動再接続の両方から呼ぶ共通関数
 // =====================
@@ -159,13 +187,16 @@ bool connectWiFi() {
   delay(100);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(HOSTNAME);
+  WiFi.setAutoReconnect(true);  // ★ 追加: ライブラリ内蔵の自動再接続も有効化
+  WiFi.persistent(false);       // ★ 追加: 毎回のbegin()でフラッシュ書き込みしない
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.printf("Wi-Fi (%s) 接続中", WIFI_SSID);
 
   int retry = 0;
   while (WiFi.status() != WL_CONNECTED && retry < 20) {
     Serial.print('.');
-    delay(1000);
+    server.handleClient();  // ★ 追加: 再接続試行中もWebサーバー処理を止めない
+    delay(500);
     retry++;
   }
   Serial.println();
@@ -178,6 +209,7 @@ bool connectWiFi() {
   // ★ 省電力モード無効化 (Modem Sleep によるPing不達防止)
   esp_wifi_set_ps(WIFI_PS_NONE);
 
+  wifiDisconnectedEvent = false;
   Serial.printf("アクセスページ: http://%s/\n", WiFi.localIP().toString().c_str());
   return true;
 }
@@ -627,6 +659,9 @@ void setup() {
     digitalWrite(RELAY_PINS[i], LOW);
   }
 
+  // ★ Wi-Fi イベントハンドラ登録（接続前に登録しておく）
+  WiFi.onEvent(onWiFiEvent);
+
   // Wi-Fi接続 (省電力モード無効化を含む)
   connectWiFi();
 
@@ -648,18 +683,41 @@ void setup() {
 
 // =====================
 // メインループ
-// ★ Wi-Fi 切断監視・自動再接続を追加
+// ★ Wi-Fi 切断監視・自動再接続
+//   1) onWiFiEvent からの即時フラグ
+//   2) WiFi.status() の定期ポーリング
+//   3) ルーター再起動などで status() 自体が更新されないケースに備え、
+//      10秒毎に IP が失われていないかも強制チェック
+//   のいずれかで再接続をトリガーする。
+//   また、再接続の待機・リトライは delay() でブロッキングせず、
+//   Webサーバーへの応答を止めないようにしている。
 // =====================
 void loop() {
-  // Wi-Fi 切断検知 → 自動再接続
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Wi-Fi切断を検知 → 再接続中...");
-    if (connectWiFi()) {
-      startMDNS();  // mDNS も再起動
-      Serial.println("再接続成功");
-    } else {
-      Serial.println("再接続失敗 → 5秒後にリトライ");
-      delay(5000);
+  unsigned long now = millis();
+
+  bool statusDown  = (WiFi.status() != WL_CONNECTED);
+  bool ipLost      = (WiFi.localIP() == IPAddress(0, 0, 0, 0));
+  bool periodicHit = (now - lastWifiCheckMs > WIFI_CHECK_INTERVAL_MS);
+
+  if (periodicHit) {
+    lastWifiCheckMs = now;
+  }
+
+  bool needReconnect = statusDown || wifiDisconnectedEvent || (periodicHit && ipLost);
+
+  if (needReconnect) {
+    // ★ 非ブロッキング化: 前回試行から一定間隔を空けてからのみ再試行する
+    if (now - lastReconnectAttemptMs > WIFI_RETRY_INTERVAL_MS || lastReconnectAttemptMs == 0) {
+      lastReconnectAttemptMs = now;
+      wifiDisconnectedEvent = false;
+
+      Serial.println("Wi-Fi切断を検知 → 再接続中...");
+      if (connectWiFi()) {
+        startMDNS();  // mDNS も再起動
+        Serial.println("再接続成功");
+      } else {
+        Serial.println("再接続失敗 → 次回リトライまで通常処理を継続");
+      }
     }
   }
 
