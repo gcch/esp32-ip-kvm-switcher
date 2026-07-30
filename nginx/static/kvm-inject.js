@@ -145,7 +145,7 @@
     const t   = getTheme();
     const bar = document.createElement("div");
     bar.id            = "kvm-switch-bar";
-    bar.style.cssText = t.bar;
+    bar.style.cssText = t.bar + "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;";
 
     // Title label
     //const title = document.createElement("div");
@@ -223,7 +223,7 @@
     });
     bar.appendChild(edidGroup);
 
-    toolbar.appendChild(bar);
+    document.body.appendChild(bar);
 
     // Fetch current channel and highlight on load
     fetch("/esp32/api/input")
