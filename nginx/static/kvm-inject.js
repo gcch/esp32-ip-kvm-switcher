@@ -135,6 +135,25 @@
   }
 
   // -----------------------------------------
+  // Setup layout
+  // -----------------------------------------
+  function setupLayout(bar) {
+    const root = document.getElementById("root");
+    if (!root) return;
+
+    document.body.style.display = "flex";
+    document.body.style.flexDirection = "column";
+    document.body.style.height = "100vh";
+    document.body.style.overflow = "hidden";
+
+    root.style.flex = "1 1 auto";
+    root.style.minHeight = "0";
+    root.style.overflow = "hidden";
+
+    bar.style.flex = "0 0 auto";
+  }
+  
+  // -----------------------------------------
   // Build and inject the toolbar bar
   // -----------------------------------------
   function injectButtons() {
@@ -145,7 +164,7 @@
     const t   = getTheme();
     const bar = document.createElement("div");
     bar.id            = "kvm-switch-bar";
-    bar.style.cssText = t.bar + "position:fixed;left:0;right:0;bottom:0;z-index:2147483647;";
+    bar.style.cssText = t.bar;
 
     // Title label
     //const title = document.createElement("div");
@@ -224,6 +243,7 @@
     bar.appendChild(edidGroup);
 
     document.body.appendChild(bar);
+    setupLayout(bar);
 
     // Fetch current channel and highlight on load
     fetch("/esp32/api/input")
