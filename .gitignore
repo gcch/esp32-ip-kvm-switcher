@@ -1,6 +1,9 @@
 # Config for esp32-kvm-switcher
 data/
 
+# PlatformIO build artifacts and downloaded libraries
+.pio/
+
 ### Linux ###
 *~
 

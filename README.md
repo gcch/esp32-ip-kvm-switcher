@@ -59,11 +59,9 @@ ESP32 でリレーのコントロール、リレー (スイッチ) の COM は�
 | -------------------------------------------------------- | -------------------------------------------------------------- |
 | ![ip-kvm-switch\_top](/readme-img/ip-kvm-switch_top.png) | ![ip-kvm-switch\_bottom](/readme-img/ip-kvm-switch_bottom.png) |
 
-### Arduino IDE のセットアップ
+### VS Code + PlatformIO のセットアップ
 
-作業 PC に Arduino IDE をインストール、Speed Studio XIAO ESP32 が使えるようにセットアップ。
-
-参考：[Seeed Studio XIAO ESP32C6 のはじめに | Speed Studio Wiki](https://wiki.seeedstudio.com/ja/xiao_esp32c6_getting_started/#ソフトウェアの準備)
+作業 PC に VS Code をインストール、PlatformIO が使えるようにセットアップ。
 
 ### arduino-littlefs-upload のセットアップ
 
@@ -84,15 +82,15 @@ ESP32 でリレーのコントロール、リレー (スイッチ) の COM は�
 | `auth_user`     | 管理画面の BASIC 認証のユーザ名              | admin                  |
 | `auth_password` | 管理画面の BASIC 認証のパスワード             | (ランダム文字列)              |
 
-[arduino-littlefs-upload](https://github.com/earlephilhower/arduino-littlefs-upload) の README にある [Usage, uploading a filesystem to the device](https://github.com/earlephilhower/arduino-littlefs-upload#usage-uploading-a-filesystem-to-the-device) に従い、ESP32 に設定ファイルを転送する。
+PlatformIO > Project Tasks > speed_xiao_esp32c6 (※使用している ESP32 モデル名) > Platform > Upload Filesystem Image で設定ファイルを転送する。
 
 ### ESP32 へのコード書き込み
 
-[esp32-ip-kvm-switcher.ino](/esp32-ip-kvm-switcher/esp32-ip-kvm-switcher.ino) を Arduino IDE で開いて、ESP32 に書き込む (アップロードする)。
+[esp32-ip-kvm-switcher.cpp](/esp32-ip-kvm-switcher/esp32-ip-kvm-switcher.cpp) を PlatformIO でビルドし、ESP32 に書き込む (アップロードする)。
 
 ### 起動確認
 
-Arduino IDE の Serial Monitor で、動作を確認。
+ターミナルで、動作を確認。
 
 `Webサーバー起動` と出れば OK。
 
