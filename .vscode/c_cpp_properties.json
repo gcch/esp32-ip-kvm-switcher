@@ -737,7 +737,7 @@
                 ]
             },
             "defines": [
-                "BUILD_NUMBER=\"20261124-232201\"",
+                "BUILD_NUMBER=\"20261125-205138\"",
                 "PLATFORMIO=60200",
                 "ARDUINO_XIAO_ESP32C6",
                 "ARDUINO_USB_MODE=1",

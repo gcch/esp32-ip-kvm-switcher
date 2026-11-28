@@ -15,6 +15,8 @@
 #include <Update.h>
 #include <esp_ota_ops.h>
 #include "esp_wifi.h"   // ★ 追加: esp_wifi_set_ps() のため
+#include "esp_log.h"    // esp_log_set_vprintf() for capturing ESP-IDF logs
+#include <stdarg.h>
 
 #ifndef BUILD_NUMBER
 #define BUILD_NUMBER "unknown"
@@ -65,19 +67,125 @@ unsigned long lastReconnectAttemptMs = 0;      // 前回の再接続試行時刻
 const unsigned long WIFI_RETRY_INTERVAL_MS = 5000;  // 再接続失敗時のリトライ間隔（非ブロッキング）
 
 // =====================
+// Console log capture
+// Mirrors everything written to Log onto the UART (Serial) and keeps the most
+// recent output in a ring buffer so that the Web UI can display it.
+// Each line is prefixed with the uptime in seconds.
+// =====================
+struct LogReadResult {
+  size_t   length;  // number of bytes copied into the output buffer
+  uint32_t next;    // cursor the client should use for the next request
+  bool     reset;   // client cursor is ahead of the device (device restarted)
+  bool     lost;    // client cursor is older than the buffer (output dropped)
+  bool     more;    // more data is available right now
+};
+
+class LogBuffer : public Print {
+public:
+  static const size_t CAPACITY = 8192;  // must be a power of two
+
+  // Call once after Serial.begin()
+  void begin() {
+    if (mutex_ == nullptr) {
+      mutex_ = xSemaphoreCreateMutexStatic(&mutexStorage_);
+    }
+    esp_log_set_vprintf(&LogBuffer::vprintfHook);
+  }
+
+  size_t write(uint8_t c) override { return write(&c, 1); }
+
+  size_t write(const uint8_t* data, size_t len) override {
+    Serial.write(data, len);
+    store(data, len);
+    return len;
+  }
+
+  // Copy up to 'cap' bytes of log output starting at absolute offset 'since'
+  LogReadResult read(uint32_t since, char* out, size_t cap) {
+    LogReadResult r = {0, since, false, false, false};
+    if (mutex_ == nullptr) return r;
+
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    const uint32_t oldest = (head_ > CAPACITY) ? (head_ - CAPACITY) : 0;
+    if (since > head_) {
+      since = oldest;       // device restarted since the client's last request
+      r.reset = true;
+    } else if (since < oldest) {
+      since = oldest;       // part of the output was overwritten
+      r.lost = true;
+    }
+    size_t n = head_ - since;
+    if (n > cap) n = cap;
+    for (size_t i = 0; i < n; i++) {
+      out[i] = buf_[(since + i) & (CAPACITY - 1)];
+    }
+    r.length = n;
+    r.next = since + (uint32_t)n;
+    r.more = (r.next < head_);
+    xSemaphoreGive(mutex_);
+    return r;
+  }
+
+  static int vprintfHook(const char* fmt, va_list args);
+
+private:
+  void putChar(char c) {
+    buf_[head_ & (CAPACITY - 1)] = c;
+    head_++;
+  }
+
+  void store(const uint8_t* data, size_t len) {
+    if (mutex_ == nullptr) return;  // not initialised yet
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    for (size_t i = 0; i < len; i++) {
+      const char c = (char)data[i];
+      if (c == '\r') continue;  // normalise CRLF to LF
+      if (atLineStart_ && c != '\n') {
+        char prefix[24];
+        const unsigned long ms = millis();
+        const int n = snprintf(prefix, sizeof(prefix), "[%lu.%03lu] ", ms / 1000UL, ms % 1000UL);
+        for (int k = 0; k < n; k++) putChar(prefix[k]);
+        atLineStart_ = false;
+      }
+      putChar(c);
+      if (c == '\n') atLineStart_ = true;
+    }
+    xSemaphoreGive(mutex_);
+  }
+
+  char buf_[CAPACITY];
+  uint32_t head_ = 0;          // total number of bytes ever written
+  bool atLineStart_ = true;
+  SemaphoreHandle_t mutex_ = nullptr;
+  StaticSemaphore_t mutexStorage_;
+};
+
+LogBuffer Log;
+
+// Redirect ESP-IDF / Arduino core logs (ESP_LOGx, log_e, ...) into Log as well
+int LogBuffer::vprintfHook(const char* fmt, va_list args) {
+  char line[256];
+  const int n = vsnprintf(line, sizeof(line), fmt, args);
+  if (n <= 0) return n;
+  const size_t len = (n < (int)sizeof(line)) ? (size_t)n : sizeof(line) - 1;
+  Log.write((const uint8_t*)line, len);
+  return n;
+}
+
+// =====================
 // 設定ファイル読み込み
 // AUTH_USER が空文字列の場合は認証スキップ
 // =====================
 bool copyConfigString(char* destination, size_t capacity, JsonVariantConst value, const char* key) {
   const char* text = value.as<const char*>();
   if (text == nullptr) {
-    Serial.printf("Missing config key: %s\n", key);
+    Log.printf("Missing config key: %s\n", key);
     return false;
   }
 
   const size_t length = strlen(text);
   if (length >= capacity) {
-    Serial.printf("Config value too long: %s (max %u bytes)\n", key, (unsigned)(capacity - 1));
+    Log.printf("Config value too long: %s (max %u bytes)\n", key, (unsigned)(capacity - 1));
     return false;
   }
 
@@ -87,20 +195,20 @@ bool copyConfigString(char* destination, size_t capacity, JsonVariantConst value
 
 bool loadConfig() {
   if (!LittleFS.begin()) {
-    Serial.println("LittleFS mount failed");
+    Log.println("LittleFS mount failed");
     return false;
   }
 
   File file = LittleFS.open("/config.json", "r");
   if (!file) {
-    Serial.println("Config file not found");
+    Log.println("Config file not found");
     return false;
   }
 
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, file);
   if (error) {
-    Serial.println("JSON parse error");
+    Log.println("JSON parse error");
     return false;
   }
 
@@ -113,21 +221,21 @@ bool loadConfig() {
   valid &= copyConfigString(AUTH_PASSWORD, sizeof(AUTH_PASSWORD), doc["auth_password"], "auth_password");
   if (!valid) return false;
   if (strlen(WIFI_SSID) == 0) {
-    Serial.println("Wi-Fi SSID is empty");
+    Log.println("Wi-Fi SSID is empty");
     return false;
   }
   if (strlen(WIFI_SSID) > 32) {
-    Serial.println("Wi-Fi SSID must be 32 bytes or less");
+    Log.println("Wi-Fi SSID must be 32 bytes or less");
     return false;
   }
   if (strlen(WIFI_PASSWORD) > 63) {
-    Serial.println("Wi-Fi password must be 63 bytes or less");
+    Log.println("Wi-Fi password must be 63 bytes or less");
     return false;
   }
 
-  Serial.println("Config loaded");
-  Serial.printf("HOSTNAME: %s\n", HOSTNAME);
-  Serial.printf("MDNS_DOMAIN: %s\n", MDNS_DOMAIN);
+  Log.println("Config loaded");
+  Log.printf("HOSTNAME: %s\n", HOSTNAME);
+  Log.printf("MDNS_DOMAIN: %s\n", MDNS_DOMAIN);
   return true;
 }
 
@@ -167,7 +275,7 @@ void pressButton(int channel) {
   if (channel < 1 || channel > NUM_CHANNELS) return;
   holdRelay(RELAY_PINS[channel - 1], PULSE_MS);
   currentChannel = channel;
-  Serial.printf("Switched to input %d\n", channel);
+  Log.printf("Switched to input %d\n", channel);
 }
 
 // =====================
@@ -176,23 +284,23 @@ void pressButton(int channel) {
 
 // PC1を3秒長押し: EDID ON/OFFトグル
 void edidToggle() {
-  Serial.println("EDID toggle started (PC1, 3 s)");
+  Log.println("EDID toggle started (PC1, 3 s)");
   holdRelay(RELAY_PINS[0], EDID_TOGGLE_MS);
-  Serial.println("EDID toggle done");
+  Log.println("EDID toggle done");
 }
 
 // PC1を10秒長押し: デフォルト設定初期化
 void factoryReset() {
-  Serial.println("Factory reset started (PC1, 10 s)");
+  Log.println("Factory reset started (PC1, 10 s)");
   holdRelay(RELAY_PINS[0], FACTORY_RESET_MS);
-  Serial.println("Factory reset done");
+  Log.println("Factory reset done");
 }
 
 // PC2を3秒長押し: EDIDリセット（再読込）
 void edidRefresh() {
-  Serial.println("EDID refresh started (PC2, 3 s)");
+  Log.println("EDID refresh started (PC2, 3 s)");
   holdRelay(RELAY_PINS[1], EDID_REFRESH_MS);
-  Serial.println("EDID refresh done");
+  Log.println("EDID refresh done");
 }
 
 // =====================
@@ -204,11 +312,11 @@ void edidRefresh() {
 void onWiFiEvent(WiFiEvent_t event) {
   switch (event) {
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      Serial.println("[WiFiEvent] Disconnect event detected");
+      Log.println("[WiFiEvent] Disconnect event detected");
       wifiDisconnectedEvent = true;
       break;
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-      Serial.println("[WiFiEvent] Got IP address");
+      Log.println("[WiFiEvent] Got IP address");
       wifiDisconnectedEvent = false;
       break;
     default:
@@ -228,19 +336,19 @@ bool connectWiFi() {
   WiFi.setAutoReconnect(true);  // ★ 追加: ライブラリ内蔵の自動再接続も有効化
   WiFi.persistent(false);       // ★ 追加: 毎回のbegin()でフラッシュ書き込みしない
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.printf("Connecting to Wi-Fi (%s)", WIFI_SSID);
+  Log.printf("Connecting to Wi-Fi (%s)", WIFI_SSID);
 
   int retry = 0;
   while (WiFi.status() != WL_CONNECTED && retry < 20) {
-    Serial.print('.');
+    Log.print('.');
     server.handleClient();  // ★ 追加: 再接続試行中もWebサーバー処理を止めない
     delay(500);
     retry++;
   }
-  Serial.println();
+  Log.println();
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Wi-Fi connection failed");
+    Log.println("Wi-Fi connection failed");
     return false;
   }
 
@@ -248,7 +356,7 @@ bool connectWiFi() {
   esp_wifi_set_ps(WIFI_PS_NONE);
 
   wifiDisconnectedEvent = false;
-  Serial.printf("Access page: http://%s/\n", WiFi.localIP().toString().c_str());
+  Log.printf("Access page: http://%s/\n", WiFi.localIP().toString().c_str());
   return true;
 }
 
@@ -258,9 +366,9 @@ bool connectWiFi() {
 void startMDNS() {
   MDNS.end();
   if (MDNS.begin(HOSTNAME)) {
-    Serial.printf("mDNS started: http://%s.%s/\n", HOSTNAME, MDNS_DOMAIN);
+    Log.printf("mDNS started: http://%s.%s/\n", HOSTNAME, MDNS_DOMAIN);
   } else {
-    Serial.println("mDNS start failed");
+    Log.println("mDNS start failed");
   }
 }
 
@@ -277,6 +385,8 @@ const char HTML_PAGE[] PROGMEM = R"rawhtml(
 <style>
 :root{color-scheme:light;--ink:#191919;--line:#c5c5c5;--blue:#005ea8;--focus:#2670e8;--warning:#b76900;--danger:#b50909}
 *{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Noto Sans JP",sans-serif;line-height:1.6;margin:0;background:#f3f5f7;color:var(--ink)}.page-header{border-bottom:4px solid var(--blue);background:#fff;padding:16px 20px}.header-inner{max-width:1100px;margin:0 auto;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}.title{font-size:1.55rem;line-height:1.35;margin:0}.firmware-version{font-size:.9rem;color:#505a64}.container{max-width:1100px;margin:0 auto;padding:20px 20px 48px}.tabs{display:flex;gap:4px;overflow-x:auto;border-bottom:2px solid #767676;margin:0;padding:0}.tab{white-space:nowrap;min-height:44px;padding:8px 14px;margin:0 0 -2px;border:0;border-bottom:2px solid transparent;border-radius:4px 4px 0 0;background:#fff;color:var(--blue);font:inherit;font-weight:700;cursor:pointer}.tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--blue)}:focus-visible{outline:3px solid var(--focus);outline-offset:2px}[hidden]{display:none!important}h2{font-size:1.3rem;margin:0 0 16px;padding-bottom:8px;border-bottom:2px solid var(--ink)}h3{font-size:1.1rem;margin:24px 0 12px}section[role=tabpanel]{background:#fff;border:1px solid var(--line);border-radius:4px;padding:24px;margin:20px 0}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0 24px}.btn,.edid-btn,#ota-submit{font:inherit;font-weight:700;min-height:44px;padding:8px 16px;border:2px solid var(--blue);border-radius:4px;background:var(--blue);color:#fff;cursor:pointer;margin:3px}.grid .btn{width:100%;margin:0;padding:8px 4px}.btn:hover,.edid-btn:hover,#ota-submit:hover{background:#003e73;border-color:#003e73}.btn.active{background:#003e73;border-color:#003e73;box-shadow:inset 0 -3px 0 #ffbf47}.btn-indicator,.btn-num{display:none}.btn-label{display:block;font-size:.95rem}.edid-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}.edid-btn{width:100%;margin:0}.edid-btn.danger{background:var(--danger);border-color:var(--danger)}.edid-btn.danger:hover,.edid-btn.running.danger{background:#8b0000;border-color:#8b0000}.edid-btn:disabled,#ota-submit:disabled{background:#b8b8b8;border-color:#b8b8b8;cursor:not-allowed}.edid-btn.running{background:#003e73}.notice{padding:12px 16px;border-left:4px solid var(--warning);background:#fff4e5}.progress-wrap{margin:12px 0}.progress-label{min-height:24px;margin-bottom:6px}.progress-bar{height:6px;background:var(--line);overflow:hidden}.progress-fill{height:100%;width:0;background:var(--blue)}.progress-fill.danger{background:var(--danger)}.status-table{width:100%;border-collapse:collapse;margin:12px 0}th{text-align:left}td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}td:first-child{font-weight:700;width:34%;background:#f5f5f5}.status-value{font-variant-numeric:tabular-nums}#toast{position:fixed;z-index:1000;bottom:12px;left:50%;transform:translate(-50%,80px);max-width:calc(100% - 24px);padding:12px 18px;background:#e8f5e9;border:2px solid #2e7d32;border-radius:4px;box-shadow:0 2px 10px #0004;transition:transform .2s;pointer-events:none}#toast.show{transform:translate(-50%,0)}
+.log-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 12px}.log-toolbar .btn{margin:0}.log-toolbar label{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 4px}.log-status{color:#505a64;font-size:.9rem}.log-view{height:420px;overflow:auto;margin:0;padding:12px;background:#111;color:#e6e6e6;border-radius:4px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+@media(max-width:640px){.log-view{height:320px}}
 @media(max-width:640px){.container{padding:16px 12px 36px}.page-header{padding:16px 12px}section[role=tabpanel]{padding:16px;margin:14px 0}.title{font-size:1.4rem}.grid{gap:6px}.grid .btn{font-size:.9rem}.edid-grid{grid-template-columns:1fr}.status-table,tbody,tr,th,td{display:block;width:100%!important}.status-table th{padding:8px 12px 2px;background:#f5f5f5}td:first-child{border-bottom:0;padding-bottom:2px}td+td{padding-top:4px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important}}
 </style>
@@ -287,6 +397,7 @@ const char HTML_PAGE[] PROGMEM = R"rawhtml(
   <div class="tabs" role="tablist" aria-label="Admin panel sections">
     <button class="tab" id="tab-control" type="button" role="tab" aria-selected="true" aria-controls="panel-control" tabindex="0">Control</button>
     <button class="tab" id="tab-device" type="button" role="tab" aria-selected="false" aria-controls="panel-device" tabindex="-1">Device</button>
+    <button class="tab" id="tab-log" type="button" role="tab" aria-selected="false" aria-controls="panel-log" tabindex="-1">Console Log</button>
     <button class="tab" id="tab-ota" type="button" role="tab" aria-selected="false" aria-controls="panel-ota" tabindex="-1">Firmware Update</button>
   </div>
   <section id="panel-control" role="tabpanel" aria-labelledby="tab-control" tabindex="0">
@@ -320,6 +431,18 @@ const char HTML_PAGE[] PROGMEM = R"rawhtml(
     <tr><th scope="row">Current Input</th><td id="current-label">Unknown</td></tr>
     <tr><th scope="row">Firmware Build</th><td id="device-firmware-version">Loading</td></tr>
   </tbody></table>
+  </section>
+  <section id="panel-log" role="tabpanel" aria-labelledby="tab-log" tabindex="0" hidden>
+  <h2>Console Log</h2>
+  <p>Shows the most recent console output of the device (about 8 KiB). Older output is discarded automatically.</p>
+  <div class="log-toolbar">
+    <button class="btn" type="button" id="log-pause" aria-pressed="false">Pause</button>
+    <button class="btn" type="button" id="log-clear">Clear View</button>
+    <button class="btn" type="button" id="log-download">Download</button>
+    <label><input type="checkbox" id="log-autoscroll" checked> Auto-scroll</label>
+    <span class="log-status" id="log-status" role="status" aria-live="polite">Waiting...</span>
+  </div>
+  <pre class="log-view" id="log-view" tabindex="0" aria-label="Console log output"></pre>
   </section>
   <section id="panel-ota" role="tabpanel" aria-labelledby="tab-ota" tabindex="0" hidden>
   <h2>Firmware Info</h2>
@@ -478,6 +601,85 @@ tabs.forEach((tab, index) => {
 
 fetchStatus();
 
+// ---- Console log viewer ----
+const tabLog = document.getElementById('tab-log');
+const logView = document.getElementById('log-view');
+const logStatus = document.getElementById('log-status');
+const logPauseBtn = document.getElementById('log-pause');
+const logAutoScroll = document.getElementById('log-autoscroll');
+const LOG_MAX_CHARS = 60000;
+let logCursor = 0;
+let logText = '';
+let logPaused = false;
+let logBusy = false;
+let logConnected = null;
+
+function setLogStatus(connected) {
+  if (connected === logConnected) return;
+  logConnected = connected;
+  logStatus.textContent = connected ? 'Live' : 'Disconnected. Retrying...';
+}
+
+function appendLog(text) {
+  if (!text) return;
+  logText += text;
+  if (logText.length > LOG_MAX_CHARS) logText = logText.slice(logText.length - LOG_MAX_CHARS);
+  renderLog();
+}
+
+function renderLog() {
+  logView.textContent = logText;
+  if (logAutoScroll.checked) logView.scrollTop = logView.scrollHeight;
+}
+
+async function pollLog() {
+  if (logBusy || logPaused || document.hidden) return;
+  if (tabLog.getAttribute('aria-selected') !== 'true') return;
+  logBusy = true;
+  try {
+    // Keep fetching while the device reports more data (bounded to stay responsive)
+    for (let i = 0; i < 10; i++) {
+      const res = await fetch('/api/log?since=' + logCursor, { cache: 'no-store' });
+      if (!res.ok) throw new Error();
+      const text = await res.text();
+      if (res.headers.get('X-Log-Reset') === '1') {
+        logText = '';
+        appendLog('--- device restarted ---\n');
+      } else if (res.headers.get('X-Log-Lost') === '1') {
+        appendLog('--- older output was dropped ---\n');
+      }
+      // Strip ANSI color escape sequences emitted by some log sources
+      appendLog(text.replace(/\x1b\[[0-9;]*m/g, ''));
+      logCursor = Number(res.headers.get('X-Log-Next')) || 0;
+      setLogStatus(true);
+      if (res.headers.get('X-Log-More') !== '1') break;
+    }
+  } catch (e) {
+    setLogStatus(false);
+  } finally {
+    logBusy = false;
+  }
+}
+
+logPauseBtn.addEventListener('click', () => {
+  logPaused = !logPaused;
+  logPauseBtn.textContent = logPaused ? 'Resume' : 'Pause';
+  logPauseBtn.setAttribute('aria-pressed', String(logPaused));
+  if (!logPaused) pollLog();
+});
+document.getElementById('log-clear').addEventListener('click', () => { logText = ''; renderLog(); });
+document.getElementById('log-download').addEventListener('click', () => {
+  const url = URL.createObjectURL(new Blob([logText], { type: 'text/plain' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'kvm-console-log.txt';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+logAutoScroll.addEventListener('change', renderLog);
+tabLog.addEventListener('click', pollLog);
+setInterval(pollLog, 1000);
+
 const otaForm = document.getElementById('ota-form');
 otaForm.addEventListener('submit', event => {
   event.preventDefault();
@@ -556,6 +758,26 @@ void handleGetDevice() {
   server.send(200, "application/json", json);
 }
 
+void handleGetLog() {
+  if (!checkAuth()) return;
+  uint32_t since = 0;
+  if (server.hasArg("since")) {
+    since = (uint32_t)strtoul(server.arg("since").c_str(), nullptr, 10);
+  }
+
+  // Single-threaded WebServer, so a static buffer is safe here
+  static char chunk[2049];
+  const LogReadResult r = Log.read(since, chunk, sizeof(chunk) - 1);
+  chunk[r.length] = '\0';
+
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("X-Log-Next",  String(r.next));
+  server.sendHeader("X-Log-Reset", r.reset ? "1" : "0");
+  server.sendHeader("X-Log-Lost",  r.lost  ? "1" : "0");
+  server.sendHeader("X-Log-More",  r.more  ? "1" : "0");
+  server.send(200, "text/plain; charset=utf-8", chunk);
+}
+
 void handlePostInput() {
   if (!checkAuth()) return;
   if (!server.hasArg("plain")) {
@@ -614,32 +836,32 @@ void handleOtaUpload() {
     otaRestartPending = false;
     if (!upload.filename.endsWith(".bin")) {
       otaUploadFailed = true;
-      Serial.println("OTA rejected: firmware filename must end in .bin");
+      Log.println("OTA rejected: firmware filename must end in .bin");
       return;
     }
     if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
       otaUploadFailed = true;
-      Update.printError(Serial);
+      Update.printError(Log);
       return;
     }
-    Serial.printf("OTA upload started: %s\n", upload.filename.c_str());
+    Log.printf("OTA upload started: %s\n", upload.filename.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE && otaUploadAuthorized && !otaUploadFailed) {
     if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
       otaUploadFailed = true;
-      Update.printError(Serial);
+      Update.printError(Log);
     }
   } else if (upload.status == UPLOAD_FILE_END && otaUploadAuthorized && !otaUploadFailed) {
     if (!Update.end(true)) {
       otaUploadFailed = true;
-      Update.printError(Serial);
+      Update.printError(Log);
     } else {
-      Serial.printf("OTA upload complete: %u bytes\n", upload.totalSize);
+      Log.printf("OTA upload complete: %u bytes\n", upload.totalSize);
       otaRestartPending = true;
     }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     Update.abort();
     otaUploadFailed = true;
-    Serial.println("OTA upload aborted");
+    Log.println("OTA upload aborted");
   }
 }
 
@@ -669,11 +891,12 @@ void handleNotFound() {
 // =====================
 void setup() {
   Serial.begin(115200);
+  Log.begin();  // start capturing console output for the Web UI
 
   // 設定ファイル読み込み
   configLoaded = loadConfig();
   if (!configLoaded) {
-    Serial.println("Check your settings and upload config.json to LittleFS");
+    Log.println("Check your settings and upload config.json to LittleFS");
   }
 
   // リレーピン初期化
@@ -695,6 +918,7 @@ void setup() {
   server.on("/",                  HTTP_GET,  handleRoot);
   server.on("/api/input",         HTTP_GET,  handleGetInput);
   server.on("/api/device",        HTTP_GET,  handleGetDevice);
+  server.on("/api/log",           HTTP_GET,  handleGetLog);
   server.on("/api/input",         HTTP_POST, handlePostInput);
   server.on("/api/edid/toggle",   HTTP_POST, handleEdidToggle);
   server.on("/api/edid/refresh",  HTTP_POST, handleEdidRefresh);
@@ -703,7 +927,7 @@ void setup() {
   server.onNotFound(handleNotFound);
   server.begin();
 
-  Serial.println("Web server started");
+  Log.println("Web server started");
 }
 
 // =====================
@@ -741,12 +965,12 @@ void loop() {
       lastReconnectAttemptMs = now;
       wifiDisconnectedEvent = false;
 
-      Serial.println("Wi-Fi disconnect detected, reconnecting...");
+      Log.println("Wi-Fi disconnect detected, reconnecting...");
       if (connectWiFi()) {
         startMDNS();  // mDNS も再起動
-        Serial.println("Reconnected");
+        Log.println("Reconnected");
       } else {
-        Serial.println("Reconnect failed, continuing until next retry");
+        Log.println("Reconnect failed, continuing until next retry");
       }
     }
   }
