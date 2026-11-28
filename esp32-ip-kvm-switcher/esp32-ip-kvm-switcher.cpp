@@ -76,8 +76,24 @@ static char TZ_STRING[48];       // POSIX TZ string, e.g. "JST-9"
 // =====================
 // GPIO pin definitions
 // =====================
-const int RELAY_PINS[4] = {0, 1, 2, 21};  // D0, D1, D2, D3
+// Relay outputs (D0, D1, D2, D3 on the Seeed Studio XIAO boards).
+// On the S3, GPIO0 is the BOOT button, so it must not be used as a relay output.
+// Adjust the list below when using a different board.
+#if CONFIG_IDF_TARGET_ESP32S3
+const int RELAY_PINS[4] = {1, 2, 3, 4};   // XIAO ESP32-S3: D0, D1, D2, D3
+#else
+const int RELAY_PINS[4] = {0, 1, 2, 21};  // XIAO ESP32-C6: D0, D1, D2, D3
+#endif
 const int NUM_CHANNELS  = 4;
+
+// BOOT button (active low). Override at build time with -DBOOT_BUTTON_PIN=<gpio> if needed.
+#ifndef BOOT_BUTTON_PIN
+  #if CONFIG_IDF_TARGET_ESP32C6
+    #define BOOT_BUTTON_PIN 9   // ESP32-C6: GPIO9
+  #else
+    #define BOOT_BUTTON_PIN 0   // ESP32-S3 and others: GPIO0
+  #endif
+#endif
 
 // =====================
 // Timing constants (ms)
@@ -86,6 +102,10 @@ const int PULSE_MS          = 300;   // Normal button press
 const int EDID_TOGGLE_MS    = 3300;  // PC1 long press: toggle EDID ON/OFF
 const int FACTORY_RESET_MS  = 11000; // PC1 long press: restore factory defaults
 const int EDID_REFRESH_MS   = 3300;  // PC2 long press: reset (reload) EDID
+
+// BOOT button settings reset
+const unsigned long BOOT_RESET_HOLD_MS   = 5000;   // Hold time required to reset the settings
+const unsigned long BOOT_RESET_WINDOW_MS = 15000;  // A press must start within this time after boot (0 = always enabled)
 
 // =====================
 // Global variables
@@ -636,6 +656,55 @@ void edidRefresh() {
 }
 
 // =====================
+// BOOT button: reset the settings
+// Do NOT hold the button while powering on or resetting the board: the chip
+// would enter the ROM download mode. Power on normally, then press and hold
+// the button for BOOT_RESET_HOLD_MS within BOOT_RESET_WINDOW_MS after boot.
+// =====================
+static void resetSettingsAndRestart() {
+  Log.println("BOOT button held: resetting settings to defaults");
+
+  bool ok = true;
+  if (LittleFS.exists("/config.json")) ok &= LittleFS.remove("/config.json");
+  if (LittleFS.exists("/config.tmp"))  ok &= LittleFS.remove("/config.tmp");
+
+  if (!ok) {
+    // Fall back to wiping the whole file system
+    Log.println("Failed to delete the config file. Formatting LittleFS...");
+    LittleFS.format();
+  }
+
+  Log.println("Settings reset. Restarting the device...");
+  delay(200);
+  ESP.restart();
+}
+
+// Non-blocking. Call it often (from loop() and from long waiting loops).
+static void pollBootButton() {
+  static bool pressed = false;
+  static unsigned long pressedSinceMs = 0;
+
+  const unsigned long now = millis();
+  if (digitalRead(BOOT_BUTTON_PIN) != LOW) {
+    pressed = false;
+    return;
+  }
+
+  if (!pressed) {
+    // A new press only counts while the startup window is open
+    if (BOOT_RESET_WINDOW_MS != 0 && now > BOOT_RESET_WINDOW_MS) return;
+    pressed = true;
+    pressedSinceMs = now;
+    Log.printf("BOOT button pressed: keep holding for %lu s to reset the settings\n", BOOT_RESET_HOLD_MS / 1000UL);
+    return;
+  }
+
+  if (now - pressedSinceMs >= BOOT_RESET_HOLD_MS) {
+    resetSettingsAndRestart();  // does not return
+  }
+}
+
+// =====================
 // Wi-Fi event handler
 // When the router blinks or reboots, WiFi.status() may update late or never,
 // so the disconnect event is detected directly and a reconnect flag is raised.
@@ -709,6 +778,7 @@ bool connectWiFi() {
   while (WiFi.status() != WL_CONNECTED && retry < 20) {
     Log.print('.');
     server.handleClient();  // keep serving the Web UI while connecting
+    pollBootButton();       // keep watching the BOOT button as well
     delay(500);
     retry++;
   }
@@ -2406,6 +2476,8 @@ void setup() {
   Serial.begin(115200);
   Log.begin();  // start capturing console output for the Web UI
 
+  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);  // BOOT button (active low)
+
   // Load the settings file (missing keys use defaults)
   configLoaded = loadConfig();
   if (!configLoaded) {
@@ -2531,6 +2603,8 @@ static void superviseWiFi(unsigned long now) {
 // =====================
 void loop() {
   const unsigned long now = millis();
+
+  pollBootButton();
 
   if (restartPending && (long)(now - restartAtMs) >= 0) {
     Log.println("Restarting the device...");

@@ -6,7 +6,8 @@ LAN 経由で切り替え可能な KVM スイッチは高価なため、市販�
 - ブラウザの管理画面 (BASIC 認証付き) から、入力切り替え・EDID 操作・ファームウェア更新ができます。
 - 管理画面から Wi-Fi・IP アドレス/DNS・NTP・管理画面アカウントを設定できます。初回は SoftAP (設定用アクセスポイント) に接続して設定するため、設定ファイルを事前に用意しなくても使い始められます。
 - Console Log の各行には、NTP で同期した現地時刻が付きます。
-- (オプション) JetKVM などの Web 管理画面に、切り替えボタンを NGINX で注入して統合できます。
+- 管理画面に入れなくなった場合は、BOOT ボタンの長押しで設定を初期化できます。
+- (オプション) JetKVM などの Web 管理画面に、切り替えボタンを nginx で注入して統合できます。
 
 ## 目次
 
@@ -24,6 +25,7 @@ LAN 経由で切り替え可能な KVM スイッチは高価なため、市販�
   - [Time (NTP・タイムゾーン)](#time-ntpタイムゾーン)
   - [Account (管理画面アカウント)](#account-管理画面アカウント)
   - [Console Log](#console-log)
+- [設定の初期化 (BOOT ボタン)](#設定の初期化-boot-ボタン)
 - [API](#api)
 - [(オプション) JetKVM 等の Web 管理画面との統合](#オプション-jetkvm-等の-web-管理画面との統合)
 
@@ -62,13 +64,13 @@ flowchart LR
 
 ### JetKVM 統合時の構成 (オプション)
 
-NGINX がリバースプロキシとして JetKVM の画面に切り替えボタン用 JavaScript を注入し、`/esp32/` へのリクエストを ESP32 に転送します。
+nginx がリバースプロキシとして JetKVM の画面に切り替えボタン用 JavaScript を注入し、`/esp32/` へのリクエストを ESP32 に転送します。
 
 ```mermaid
 flowchart LR
     Browser["ブラウザ"]
 
-    subgraph Proxy["NGINX (リバースプロキシ / HTTPS:443)"]
+    subgraph Proxy["nginx (リバースプロキシ / HTTPS:443)"]
         direction TB
         Root["location /<br/>JetKVM へ転送<br/>sub_filter で kvm-inject.js を注入"]
         Esp["location /esp32/<br/>ESP32 へ転送<br/>Authorization ヘッダーを付与"]
@@ -89,7 +91,7 @@ flowchart LR
 sequenceDiagram
     actor U as 利用者
     participant B as ブラウザ
-    participant N as NGINX
+    participant N as nginx
     participant E as ESP32
     participant R as リレー
     participant K as KVM スイッチ
@@ -106,7 +108,7 @@ sequenceDiagram
     B-->>U: 表示を更新
 ```
 
-> NGINX を使わない場合は、ブラウザが ESP32 の管理画面 (`http://<hostname>.<mdns_domain>/`) に直接アクセスします。
+> nginx を使わない場合は、ブラウザが ESP32 の管理画面 (`http://<hostname>.<mdns_domain>/`) に直接アクセスします。
 
 ### ファイル構成
 
@@ -117,7 +119,7 @@ sequenceDiagram
 | `platformio.ini`                                  | PlatformIO のビルド設定 (Seeed XIAO ESP32C6)       |
 | `partitions.csv`                                  | パーティション定義 (OTA 用に app0 / app1 の 2 面構成)       |
 | `scripts/`                                        | ビルド番号の埋め込み、mklittlefs の指定                    |
-| `nginx/sites-available/kvm-proxy`                 | JetKVM 統合用の NGINX 設定                         |
+| `nginx/sites-available/kvm-proxy`                 | JetKVM 統合用の nginx 設定                         |
 | `nginx/static/kvm-inject.js`                      | 切り替えボタンを注入する JavaScript                      |
 | `readme-img/`                                     | README 用の画像                                  |
 
@@ -127,7 +129,7 @@ sequenceDiagram
 
 | 構成品                 | 製品例                                                                                                               | 価格        | 備考                                                                                                                                                   |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------- | :-------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ESP32               | Seeed Studio XIAO ESP32C6 ([秋月電子](https://akizukidenshi.com/catalog/g/g129481/))                                  | 1,000円くらい | ESP32C3 や ESP32S3 でも作れるはず。他の ESP32 デバイスでも作れるはず (別途コードを作成すれば、GPIO を持つ Raspberry Pi Pico 2 W などでも実現可能な認識) だが、Wi-Fi 搭載モデルを選ぶこと。日本で使用する場合は技適マークのあるものを購入。 |
+| ESP32               | Seeed Studio XIAO ESP32C6 ([秋月電子](https://akizukidenshi.com/catalog/g/g129481/))                                  | 1,000円くらい | ESP32C3 や ESP32S3 でも作れるはず (ESP32S3 は BOOT ボタンとリレー用ピンの衝突に注意。[配線](#配線)参照)。他の ESP32 デバイスでも作れるはず (別途コードを作成すれば、GPIO を持つ Raspberry Pi Pico 2 W などでも実現可能な認識) だが、Wi-Fi 搭載モデルを選ぶこと。日本で使用する場合は技適マークのあるものを購入。 |
 | KVM スイッチ            | KCEVE KVM8401BA ([Amazon.co.jp](https://amzn.to/4vCGTyV))                                                         | 数千〜数万円    | KVM スイッチを 0 から作るのは大変なので、HDMI・4入力・1出力・コントローラ付きの KVM スイッチを使用。他社製の KVM でもリモコンがただのスイッチであれば、同様の仕組みで実装可能。2入力のモデルとかでも動作するはず。EDID エミュレーション機能ありのもの推奨。         |
 | リレーモジュール            | DC5V駆動4チャンネルフォトリレーモジュール ([Amazon.co.jp](https://amzn.to/4cCMsF5))                                                 | 数百円       | チャンネル数は KVM スイッチの入力切り替え数に応じて。正直なんでもOK。                                                                                                               |
 | USB ケーブル            | USB-C to USB-A ([Amazon.co.jp](https://amzn.to/4teYpb3))、USB-C to USB-C ([Amazon.co.jp](https://amzn.to/41GcQZK)) | 数百円       | ESP32 にはケーブルが付属していないので、開発する PC に合わせて USB-C to USB-A、USB-C to USB-C などを用意。手持ちがあれば OK。データ通信もできるケーブルが必要。50cm もあれば十分。                            |
@@ -157,6 +159,7 @@ KVM スイッチ付属のコントローラを分解し、基板を取り外し�
 - リレー (スイッチ) の COM はケーブルの G (GND) に接続します。
 - NO (Normally Open) は、リモコンの各ボタンに対応するケーブルに接続します。
 - リレーは HIGH 側で駆動するように設定します。
+- リレー用の GPIO は、ビルド対象のチップに合わせてファームウェアが自動で選びます。ESP32S3 (XIAO ESP32S3) では GPIO0 が BOOT ボタンのため、D0〜D3 (GPIO1〜4) を使用します。他のボード (D0〜D3 以外の配線) を使う場合は、ソースの `RELAY_PINS` を書き換えてください。
 
 | チャンネル | ESP32 ピン | リレー入力 | ケーブル色 | 対応する KVM ボタン |
 | :---: | :----: | :---: | :---: | :---------: |
@@ -296,7 +299,7 @@ Wi-Fi への接続が回復し、SoftAP に接続中の端末がなくなると�
 
 Wi-Fi と IP アドレス/DNS の設定は、保存すると ESP32 が再起動して反映されます。
 
-> IP アドレスを手動で設定する場合は、ルーターの DHCP 割り当て範囲外のアドレスを指定し、値を間違えないよう注意してください。到達できないアドレスを設定すると、管理画面にアクセスできなくなります。この場合は、設定ファイルを書き換えて Upload Filesystem Image で転送し直してください。
+> IP アドレスを手動で設定する場合は、ルーターの DHCP 割り当て範囲外のアドレスを指定し、値を間違えないよう注意してください。到達できないアドレスを設定すると、管理画面にアクセスできなくなります。この場合は、[BOOT ボタンで設定を初期化](#設定の初期化-boot-ボタン)するか、設定ファイルを書き換えて Upload Filesystem Image で転送し直してください。
 
 ### Time (NTP・タイムゾーン)
 
@@ -307,7 +310,7 @@ Wi-Fi と IP アドレス/DNS の設定は、保存すると ESP32 が再起動�
 
 BASIC 認証のユーザー名とパスワード (8〜255 文字の ASCII) を設定します。パスワードを空欄にすると、現在のパスワードを維持します。ユーザー名を空にすると、認証が無効になります。保存後、ブラウザが新しい認証情報を要求します。
 
-> NGINX 統合を使っている場合は、パスワードを変更したら、`kvm-proxy` の `Authorization` ヘッダーも更新してください。
+> nginx 統合を使っている場合は、パスワードを変更したら、`kvm-proxy` の `Authorization` ヘッダーも更新してください。
 
 ### Console Log
 
@@ -316,6 +319,56 @@ BASIC 認証のユーザー名とパスワード (8〜255 文字の ASCII) を�
 ```
 [2026-11-28 15:04:05] [12.345] Switched to input 2
 ```
+
+## 設定の初期化 (BOOT ボタン)
+
+Wi-Fi や管理画面のパスワードを誤って設定し、管理画面にアクセスできなくなった場合は、ESP32 の BOOT ボタンを長押しして、設定を初期化できます。設定ファイル (`config.json`) が削除され、再起動後に[初期設定](#wi-fi-未設定の場合-初期設定)の状態 (SoftAP が起動する状態) に戻ります。
+
+| チップ | BOOT ボタンの GPIO |
+| --- | :---: |
+| ESP32C6 (XIAO ESP32C6) | GPIO9 |
+| ESP32S3 (XIAO ESP32S3 など) | GPIO0 |
+
+### 手順
+
+1. ESP32 の電源 (USB) を入れて、通常どおり起動させます。
+2. **起動してから 15 秒以内**に BOOT ボタンを押し、そのまま **5 秒間**押し続けます。
+3. ESP32 が自動で再起動します。SoftAP `KVM-Setup-XXXXXX` が起動するので、[初期設定](#wi-fi-未設定の場合-初期設定)の手順で設定し直してください。
+
+> **BOOT ボタンを押したまま電源を入れたり、リセットしたりしないでください。** ESP32 がダウンロードモードで起動し、ファームウェアが動作しません。必ず、起動してから押してください。
+> ダウンロードモードになった場合は、ボタンを離して電源を入れ直すと、通常どおり起動します。
+
+15 秒を過ぎてから押し始めた場合は、誤操作を防ぐため無効になります (押し始めが 15 秒以内であれば、5 秒に達するまで押し続けて構いません)。この場合は、電源を入れ直してやり直してください。
+
+シリアルモニタ (または Console Log) には、次のように表示されます。
+
+```
+BOOT button pressed: keep holding for 5 s to reset the settings
+BOOT button held: resetting settings to defaults
+Settings reset. Restarting the device...
+```
+
+### 初期化される内容
+
+`config.json` に保存されている、次の設定がすべて既定値に戻ります。
+
+- Wi-Fi (SSID・パスワード)
+- IP アドレス・DNS
+- NTP・タイムゾーン
+- 管理画面のアカウント (**初期化後は BASIC 認証が無効になります**。初期設定後、Account タブで早めに設定してください)
+- ホスト名・mDNS ドメイン
+
+KVM スイッチ本体の設定 (管理画面の **Factory Reset**) や、ファームウェアは初期化されません。nginx 統合を使っている場合は、パスワードを設定し直したら `kvm-proxy` の `Authorization` ヘッダーも更新してください。
+
+### 長押し時間などの変更
+
+ソース ([esp32-ip-kvm-switcher.cpp](/esp32-ip-kvm-switcher/esp32-ip-kvm-switcher.cpp)) の次の定数で変更できます。
+
+| 定数 | 内容 | 既定値 |
+| --- | --- | --- |
+| `BOOT_RESET_HOLD_MS` | 初期化に必要な長押しの時間 (ms) | `5000` |
+| `BOOT_RESET_WINDOW_MS` | 起動後に、押し始めを受け付ける時間 (ms)。`0` にすると、常に受け付けます | `15000` |
+| `BOOT_BUTTON_PIN` | BOOT ボタンの GPIO。ビルド時に `-DBOOT_BUTTON_PIN=<gpio>` でも指定できます | C6: `9` / その他: `0` |
 
 ## API
 
@@ -344,7 +397,7 @@ BASIC 認証のユーザー名とパスワード (8〜255 文字の ASCII) を�
 
 ## (オプション) JetKVM 等の Web 管理画面との統合
 
-JetKVM など、Web ブラウザで管理する KVM と組み合わせて使う場合は、KVM スイッチのボタンが同じ画面にある方が使いやすくなります。NGINX のリバースプロキシ機能を使い、KVM スイッチ切り替え機能 (ウィンドウ最下部) を JetKVM の画面に注入します。構成は[上記の図](#jetkvm-統合時の構成-オプション)を参照してください。
+JetKVM など、Web ブラウザで管理する KVM と組み合わせて使う場合は、KVM スイッチのボタンが同じ画面にある方が使いやすくなります。nginx のリバースプロキシ機能を使い、KVM スイッチ切り替え機能 (ウィンドウ最下部) を JetKVM の画面に注入します。構成は[上記の図](#jetkvm-統合時の構成-オプション)を参照してください。
 
 ![jetkvm+kvm-sw](/readme-img/jetkvm+kvm-sw.png)
 
