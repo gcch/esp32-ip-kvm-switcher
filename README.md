@@ -4,6 +4,8 @@ LAN 経由で切り替え可能な KVM スイッチは高価なため、市販�
 
 - ESP32 がリレーを介して KVM スイッチのコントローラボタンを「押す」ことで、入力を切り替えます。
 - ブラウザの管理画面 (BASIC 認証付き) から、入力切り替え・EDID 操作・ファームウェア更新ができます。
+- 管理画面から Wi-Fi・IP アドレス/DNS・NTP・管理画面アカウントを設定できます。初回は SoftAP (設定用アクセスポイント) に接続して設定するため、設定ファイルを事前に用意しなくても使い始められます。
+- Console Log の各行には、NTP で同期した現地時刻が付きます。
 - (オプション) JetKVM などの Web 管理画面に、切り替えボタンを NGINX で注入して統合できます。
 
 ## 目次
@@ -17,6 +19,11 @@ LAN 経由で切り替え可能な KVM スイッチは高価なため、市販�
   - [4. ファームウェアの書き込み](#4-ファームウェアの書き込み)
   - [5. 起動確認](#5-起動確認)
   - [6. 管理画面へのアクセス](#6-管理画面へのアクセス)
+- [管理画面の設定機能](#管理画面の設定機能)
+  - [Network (Wi-Fi・IP アドレス・DNS)](#network-wi-fiip-アドレスdns)
+  - [Time (NTP・タイムゾーン)](#time-ntpタイムゾーン)
+  - [Account (管理画面アカウント)](#account-管理画面アカウント)
+  - [Console Log](#console-log)
 - [API](#api)
 - [(オプション) JetKVM 等の Web 管理画面との統合](#オプション-jetkvm-等の-web-管理画面との統合)
 
@@ -105,7 +112,7 @@ sequenceDiagram
 
 | パス                                                | 内容                                           |
 | ------------------------------------------------- | -------------------------------------------- |
-| `esp32-ip-kvm-switcher/esp32-ip-kvm-switcher.cpp` | ファームウェア本体 (Web サーバー・リレー制御・Wi-Fi/mDNS 管理・OTA) |
+| `esp32-ip-kvm-switcher/esp32-ip-kvm-switcher.cpp` | ファームウェア本体 (Web サーバー・リレー制御・Wi-Fi/SoftAP/mDNS/NTP 管理・OTA) |
 | `esp32-ip-kvm-switcher/data.sample/config.json`   | 設定ファイルのサンプル (`data` にリネームして使用)               |
 | `platformio.ini`                                  | PlatformIO のビルド設定 (Seeed XIAO ESP32C6)       |
 | `partitions.csv`                                  | パーティション定義 (OTA 用に app0 / app1 の 2 面構成)       |
@@ -183,7 +190,10 @@ KVM スイッチ付属のコントローラを分解し、基板を取り外し�
 
 作業 PC に VS Code をインストールし、PlatformIO が使えるようにセットアップします。
 
-### 3. 設定ファイルの作成と転送
+### 3. 設定ファイルの作成と転送 (任意)
+
+> この手順は省略できます。設定ファイルがない場合は、起動時に設定用の SoftAP が立ち上がるので、[管理画面の設定機能](#network-wi-fiip-アドレスdns)から Wi-Fi などを設定できます (初回の設定手順は「[6. 管理画面へのアクセス](#6-管理画面へのアクセス)」を参照)。
+> ファイルシステムが未初期化の場合は、起動時に自動でフォーマットされます。
 
 1. [data.sample](/esp32-ip-kvm-switcher/data.sample) フォルダを `data` にリネームします。
 2. フォルダ内の [config.json](/esp32-ip-kvm-switcher/data.sample/config.json) を、自身の環境に合わせて編集します。
@@ -197,9 +207,26 @@ KVM スイッチ付属のコントローラを分解し、基板を取り外し�
 | `auth_user`     | 管理画面の BASIC 認証のユーザ名              | admin                  |
 | `auth_password` | 管理画面の BASIC 認証のパスワード             | (ランダム文字列)              |
 
+すべての項目は省略可能で、省略した項目は既定値になります。次の項目は管理画面からも変更でき、変更すると `config.json` に自動保存されます。
+
+| 設定項目            | 設定内容                                     | 既定値            |
+| --------------- | ---------------------------------------- | -------------- |
+| `ip_mode`       | IP アドレスの取得方法 (`dhcp` / `static`)         | `dhcp`         |
+| `ip_address`    | 手動設定時の IP アドレス                           | (空)            |
+| `subnet_mask`   | 手動設定時のサブネットマスク                           | (空)            |
+| `gateway`       | 手動設定時のデフォルトゲートウェイ                        | (空)            |
+| `dns_mode`      | DNS の取得方法 (`auto` / `manual`)            | `auto`         |
+| `dns1` / `dns2` | 手動設定時の DNS サーバ (`dns2` は省略可)             | (空)            |
+| `ntp_enabled`   | NTP クライアントの有効/無効 (`true` / `false`)      | `true`         |
+| `ntp_server1` / `ntp_server2` | NTP サーバ (`ntp_server2` は省略可) | `ntp.nict.jp` / `pool.ntp.org` |
+| `timezone`      | タイムゾーン (POSIX TZ 形式)                     | `JST-9`        |
+
+`hostname` と `mdns_domain` の既定値は、それぞれ `esp32-kvm` と `local` です。
+
 3. PlatformIO の **Project Tasks > `seeed_xiao_esp32c6` (使用している ESP32 モデル名) > Platform > Upload Filesystem Image** で、設定ファイルを ESP32 に転送します。
 
-> `auth_user` を空文字列にすると、BASIC 認証が無効になります。
+> `auth_user` を空文字列にすると、BASIC 認証が無効になります。認証を設定していない間は、同じネットワーク上の誰でも操作できるため、管理画面の Account タブで早めに設定してください。
+> `wifi_ssid` が空 (または設定ファイルがない) の場合は、Wi-Fi に接続せずに SoftAP を起動します。
 
 ### 4. ファームウェアの書き込み
 
@@ -207,26 +234,88 @@ KVM スイッチ付属のコントローラを分解し、基板を取り外し�
 
 ### 5. 起動確認
 
-シリアルモニタで動作を確認します。`Web server started` と表示されれば OK です。
+シリアルモニタで動作を確認します。`Web server started` と表示されれば OK です。各行の先頭には、現地時刻 (NTP 同期前は `----------` 表示) と起動からの秒数が付きます。
+
+Wi-Fi 設定済みの場合:
 
 ```
 Config loaded
 HOSTNAME: <hostname>
 MDNS_DOMAIN: <mdns_domain>
-WIFI_SSID: <wifi_ssid>
 Connecting to Wi-Fi (<wifi_ssid>)....
 Access page: http://xxx.xxx.xxx.xxx/
 mDNS started: http://<hostname>.<mdns_domain>/
+NTP started: ntp.nict.jp, pool.ntp.org (TZ=JST-9)
+Web server started
+```
+
+Wi-Fi 未設定の場合 (または接続に失敗した場合) は、設定用の SoftAP が起動します。
+
+```
+Wi-Fi is not configured. Starting the setup AP
+Setup AP started: SSID=KVM-Setup-XXXXXX, URL=http://192.168.4.1/
 Web server started
 ```
 
 ### 6. 管理画面へのアクセス
 
-コンソールに表示された `アクセスページ` のアドレスに、Web ブラウザでアクセスします。BASIC 認証が求められるので、`config.json` で設定した `auth_user` と `auth_password` で認証してください。
+#### Wi-Fi 設定済みの場合
+
+コンソールに表示された `Access page` のアドレス (または `http://<hostname>.<mdns_domain>/`) に、Web ブラウザでアクセスします。BASIC 認証が求められるので、`config.json` で設定した `auth_user` と `auth_password` で認証してください (認証を設定していない場合は不要です)。
+
+#### Wi-Fi 未設定の場合 (初期設定)
+
+1. スマートフォンや PC の Wi-Fi で、SSID `KVM-Setup-XXXXXX` (`XXXXXX` は MAC アドレス由来の 6 桁) に接続します。パスワードの既定値は `kvm-setup` です。
+2. ブラウザで `http://192.168.4.1/` にアクセスし、**Network** タブを開きます。
+3. **Scan Networks** で接続先を選び (または SSID を直接入力し)、パスワードを入力して **Save and Restart** を押します。
+4. ESP32 が再起動して Wi-Fi に接続すると、SoftAP は停止します。端末を元の Wi-Fi に戻し、`http://<hostname>.<mdns_domain>/` (または、ルーターで確認した IP アドレス) にアクセスします。
+5. **Account** タブでユーザー名とパスワードを設定します。
+
+> SoftAP のパスワードは、ビルド時に `-DSETUP_AP_PASSWORD=\"任意の文字列\"` (8〜63 文字) を指定すると変更できます。PlatformIO では、`platformio.ini` の `build_flags` に追加してください。
+
+SoftAP は、次の場合にも起動します。
+
+- 起動時に Wi-Fi への接続に失敗したとき (SSID やパスワードを誤って保存した場合など)
+- 接続後に Wi-Fi が 5 分以上切断されたままのとき
+
+Wi-Fi への接続が回復し、SoftAP に接続中の端末がなくなると、SoftAP は自動で停止します。
 
 認証に成功すると、次の管理画面が表示されます。入力の切り替えなど各種機能が正常に動作すれば完了です。
 
 ![web-manager](/readme-img/web-manager.png)
+
+## 管理画面の設定機能
+
+管理画面には、入力切り替えなどの **Control**、**Device**、**Console Log**、**Firmware Update** に加えて、次のタブがあります。
+
+### Network (Wi-Fi・IP アドレス・DNS)
+
+- **Network Status**: 接続中の SSID、電波強度、IP アドレス、サブネットマスク、ゲートウェイ、DNS、MAC アドレス、SoftAP の状態を表示します。
+- **Wi-Fi Settings**: SSID とパスワードを設定します。**Scan Networks** で周辺のアクセスポイントを選べます。パスワードを空欄にすると保存済みのパスワードを維持します。パスワードなしのネットワークに接続する場合は **Open network** にチェックを入れます。
+- **IP Address and DNS**: IP アドレスと DNS を、それぞれ自動 (DHCP) または手動で設定します。IP アドレスを手動にした場合は、DNS も手動になります。入力値 (サブネットマスク、ゲートウェイが同一セグメントか、など) は検証されます。
+
+Wi-Fi と IP アドレス/DNS の設定は、保存すると ESP32 が再起動して反映されます。
+
+> IP アドレスを手動で設定する場合は、ルーターの DHCP 割り当て範囲外のアドレスを指定し、値を間違えないよう注意してください。到達できないアドレスを設定すると、管理画面にアクセスできなくなります。この場合は、設定ファイルを書き換えて Upload Filesystem Image で転送し直してください。
+
+### Time (NTP・タイムゾーン)
+
+- **Time Status**: 現在時刻、タイムゾーン、NTP の同期状況 (同期済み / 応答待ち / 無効)、最終同期時刻を表示します。**Synchronize Now** で、すぐに再同期できます。
+- **NTP Settings**: NTP の有効/無効、サーバ (2 台まで)、タイムゾーンを設定します。再起動は不要で、保存するとすぐに反映されます。タイムゾーンは、プリセットのほか、POSIX TZ 形式 (例: `JST-9`) で直接入力できます。
+
+### Account (管理画面アカウント)
+
+BASIC 認証のユーザー名とパスワード (8〜255 文字の ASCII) を設定します。パスワードを空欄にすると、現在のパスワードを維持します。ユーザー名を空にすると、認証が無効になります。保存後、ブラウザが新しい認証情報を要求します。
+
+> NGINX 統合を使っている場合は、パスワードを変更したら、`kvm-proxy` の `Authorization` ヘッダーも更新してください。
+
+### Console Log
+
+デバイスのコンソール出力 (直近 8 KiB 程度) を表示します。各行は `[現地時刻] [起動からの秒数] メッセージ` の形式です。NTP で時刻が同期されるまでは、現地時刻の部分が `----------` で表示されます。
+
+```
+[2026-11-28 15:04:05] [12.345] Switched to input 2
+```
 
 ## API
 
@@ -242,6 +331,16 @@ Web server started
 | POST | `/api/edid/refresh` | EDID の再読み込み                   | PC2 ボタンを 3.3 秒長押し       |
 | POST | `/api/edid/factory` | KVM スイッチのデフォルト設定初期化           | PC1 ボタンを 11 秒長押し        |
 | POST | `/api/ota`          | ファームウェア更新 (`.bin` をアップロード)    | -                       |
+| GET  | `/api/log`          | Console Log を取得 (`?since=` で差分取得) | -                       |
+| GET  | `/api/network`      | ネットワーク状態と保存済みの設定 (パスワードは返さない) | -                       |
+| GET  | `/api/wifi/scan`    | Wi-Fi スキャン (`?start=1` で開始、結果は同じパスをポーリング) | -                       |
+| POST | `/api/wifi`         | Wi-Fi 設定を保存して再起動 (`{"ssid", "password"}`) | -                       |
+| POST | `/api/ip`           | IP アドレス/DNS 設定を保存して再起動 (`{"mode", "ip", "subnet", "gateway", "dns_mode", "dns1", "dns2"}`) | -                       |
+| GET  | `/api/ntp`          | NTP の設定と同期状況                  | -                       |
+| POST | `/api/ntp`          | NTP 設定を保存して即時反映 (`{"enabled", "server1", "server2", "timezone"}`) | -                       |
+| POST | `/api/ntp/sync`     | NTP サーバと今すぐ同期                 | -                       |
+| GET  | `/api/account`      | 認証の有効/無効とユーザー名 (パスワードは返さない)   | -                       |
+| POST | `/api/account`      | アカウントを保存 (`{"user", "password"}`) | -                       |
 
 ## (オプション) JetKVM 等の Web 管理画面との統合
 
@@ -249,9 +348,9 @@ JetKVM など、Web ブラウザで管理する KVM と組み合わせて使う�
 
 ![jetkvm+kvm-sw](/readme-img/jetkvm+kvm-sw.png)
 
-### NGINX のセットアップ
+### nginx のセットアップ
 
-NGINX をインストールし、デフォルトページを削除します。
+nginx をインストールし、デフォルトページを削除します。
 
 ```bash
 apt install nginx
@@ -274,7 +373,7 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 
 [kvm-inject.js](/nginx/static/kvm-inject.js) を `/etc/nginx/static/kvm-inject.js` に配置します。
 
-### NGINX のプロキシ設定
+### nginx のプロキシ設定
 
 [kvm-proxy](/nginx/sites-available/kvm-proxy) を `/etc/nginx/sites-available/kvm-proxy` に配置し、環境に合わせて編集します。
 
